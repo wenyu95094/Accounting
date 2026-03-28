@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>雲端日曆記帳 App</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    @keyframes shimmer {
+      100% { transform: translateX(100%); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade-in {
+      animation: fadeIn 0.3s ease-out forwards;
+    }
+    .pb-safe {
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    /* Hide scrollbar for cleaner UI */
+    ::-webkit-scrollbar { width: 0px; background: transparent; }
+  </style>
+</head>
+<body class="bg-gray-100 h-screen overflow-hidden selection:bg-indigo-200">
+
+  <!-- Main App Container -->
+  <div class="flex flex-col h-full max-w-md mx-auto bg-gray-50 text-gray-800 font-sans shadow-xl relative" id="app-container" style="display: none;">
+    
+    <!-- Header -->
+    <header class="bg-white px-6 py-4 shadow-sm z-10 flex justify-between items-center relative">
+      <div class="flex items-center gap-2">
+        <i data-lucide="pie-chart" class="w-6 h-6 text-indigo-600"></i>
+        <h1 class="text-xl font-bold text-gray-800">記帳小幫手</h1>
+      </div>
+      
+      <div class="flex items-center gap-3">
+        <div id="auth-status" class="text-gray-400 bg-gray-100 p-1.5 rounded-full" title="連線狀態">
+          <i data-lucide="cloud-off" class="w-4 h-4"></i>
+        </div>
+
+        <input 
+          type="month" 
+          id="month-selector"
+          class="border-none bg-indigo-50 text-indigo-700 font-bold rounded-lg px-2 py-1 text-sm focus:ring-0 cursor-pointer w-32 text-center"
+        />
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 overflow-y-auto p-4 pb-28 relative" id="main-content">
+      <div id="no-cloud-warning" class="bg-yellow-50 text-yellow-700 p-3 rounded-lg mb-4 text-xs font-medium text-center border border-yellow-200" style="display: none;">
+        提醒：目前處於無雲端環境，資料將儲存於瀏覽器快取 (Local Storage)。清空瀏覽器紀錄將遺失資料。
+      </div>
+
+      <!-- Views -->
+      <div id="view-dashboard" class="view-section hidden"></div>
+      <div id="view-calendar" class="view-section hidden"></div>
+      <div id="view-form" class="view-section hidden"></div>
+      <div id="view-list" class="view-section hidden"></div>
+      <div id="view-installments" class="view-section hidden"></div>
+    </main>
+
+    <!-- Bottom Navigation -->
+    <nav class="bg-white border-t border-gray-200 flex justify-around p-2 absolute bottom-0 w-full max-w-md pb-safe shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-20">
+      <button onclick="window.switchTab('dashboard')" id="nav-dashboard" class="nav-btn flex flex-col items-center justify-center w-14 pt-1 pb-2 transition-colors text-gray-400 hover:text-gray-600">
+        <div class="icon-container mb-1 transition-transform duration-200"><i data-lucide="home"></i></div>
+        <span class="text-[10px] font-medium">總覽</span>
+      </button>
+      
+      <button onclick="window.switchTab('calendar')" id="nav-calendar" class="nav-btn flex flex-col items-center justify-center w-14 pt-1 pb-2 transition-colors text-gray-400 hover:text-gray-600">
+        <div class="icon-container mb-1 transition-transform duration-200"><i data-lucide="calendar"></i></div>
+        <span class="text-[10px] font-medium">日曆</span>
+      </button>
+      
+      <div class="relative -top-6">
+        <button 
+          onclick="window.switchTab('form')"
+          id="nav-form"
+          class="bg-indigo-600 text-white p-4 rounded-full shadow-lg shadow-indigo-200 transform transition-transform hover:scale-105 active:scale-95"
+        >
+          <i data-lucide="plus-circle" class="w-7 h-7"></i>
+        </button>
+      </div>
+
+      <button onclick="window.switchTab('list')" id="nav-list" class="nav-btn flex flex-col items-center justify-center w-14 pt-1 pb-2 transition-colors text-gray-400 hover:text-gray-600">
+        <div class="icon-container mb-1 transition-transform duration-200"><i data-lucide="list"></i></div>
+        <span class="text-[10px] font-medium">明細</span>
+      </button>
+
+      <button onclick="window.switchTab('installments')" id="nav-installments" class="nav-btn flex flex-col items-center justify-center w-14 pt-1 pb-2 transition-colors text-gray-400 hover:text-gray-600">
+        <div class="icon-container mb-1 transition-transform duration-200"><i data-lucide="credit-card"></i></div>
+        <span class="text-[10px] font-medium">分期</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Loading State -->
+  <div id="loading-screen" class="flex flex-col items-center justify-center h-screen bg-gray-50 text-indigo-600 max-w-md mx-auto">
+    <i data-lucide="loader-2" class="w-10 h-10 animate-spin mb-4"></i>
+    <p class="font-medium text-gray-600">連線至雲端資料庫...</p>
+  </div>
+
+  <!-- Firebase & App Logic -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // --- Environment Setup ---
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const initToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+    let app, auth, db;
+    let useLocalStorage = false;
+
+    if (firebaseConfig) {
+      app = initializeApp(firebaseConfig);
+      auth = getAuth(app);
+      db = getFirestore(app);
+    } else {
+      document.getElementById('no-cloud-warning').style.display = 'block';
+      useLocalStorage = true;
+    }
+
+    // --- State Management ---
+    const state = {
+      activeTab: 'dashboard', // dashboard, calendar, form, list, installments
+      currentMonthStr: new Date().toISOString().substring(0, 7),
+      user: useLocalStorage ? { uid: 'local-user' } : null,
+      transactions: [],
+      installments: [],
+      customTags: [],
+      editingItem: null, // null or { type: 'transaction'|'installment', data: {} }
+      calendarSelectedDate: new Date().toISOString().split('T')[0],
+      pieChartExpanded: false,
+      
+      // Form temporary state
+      formType: 'expense',
+      formCategory: '餐飲'
+    };
+
+    const DEFAULT_CATEGORIES = {
+      expense: ['餐飲', '交通', '購物', '娛樂', '居家', '其他'],
+      income: ['薪資', '投資', '獎金', '其他'],
+      installment: ['購物', '家電', '進修', '保險']
+    };
+
+    const CATEGORY_COLORS = {
+      '餐飲': '#ef4444', '交通': '#f97316', '購物': '#eab308', '娛樂': '#22c55e', 
+      '居家': '#3b82f6', '進修': '#a855f7', '家電': '#6366f1', '薪資': '#10b981',
+      '投資': '#06b6d4', '保險': '#f43f5e', '寵物': '#f59e0b'
+    };
+
+    // --- Helper Functions ---
+    const formatCurrency = (amount) => new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', minimumFractionDigits: 0 }).format(amount);
+    const getMonthString = (date) => new Date(date).toISOString().substring(0, 7);
+    
+    const generateColorForString = (str) => {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) { hash = str.charCodeAt(i) + ((hash << 5) - hash); }
+      return `hsl(${Math.abs(hash) % 360}, 65%, 55%)`;
+    };
+
+    const generateInstallmentPayments = (inst) => {
+      const payments = [];
+      let currentDate = new Date(inst.startDate);
+      const monthlyAmount = Math.round(inst.totalAmount / inst.months);
+      const remainder = inst.totalAmount - (monthlyAmount * inst.months);
+
+      for (let i = 0; i < inst.months; i++) {
+        payments.push({
+          id: `${inst.id}-p${i+1}`,
+          installmentId: inst.id,
+          title: `${inst.title} (${i+1}/${inst.months})`,
+          amount: i === 0 ? monthlyAmount + remainder : monthlyAmount,
+          date: new Date(currentDate).toISOString().split('T')[0],
+          monthStr: getMonthString(currentDate),
+          type: 'expense',
+          category: inst.category || '分期付款',
+          isInstallmentPayment: true
+        });
+        currentDate.setMonth(currentDate.getMonth() + 1);
+      }
+      return payments;
+    };
+
+    const getDerivedData = () => {
+      let allEffective = [...state.transactions];
+      state.installments.forEach(inst => {
+        allEffective = allEffective.concat(generateInstallmentPayments(inst));
+      });
+      allEffective.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+      const monthTx = allEffective.filter(t => getMonthString(t.date) === state.currentMonthStr);
+      let income = 0, expense = 0;
+      monthTx.forEach(t => {
+        if (t.type === 'income') income += t.amount;
+        if (t.type === 'expense') expense += t.amount;
+      });
+
+      return { allEffective, monthTx, income, expense, balance: income - expense };
+    };
+
+    // --- Local Storage Helpers ---
+    const loadLocalData = () => {
+      try {
+        state.transactions = JSON.parse(localStorage.getItem('expense_transactions') || '[]');
+        state.installments = JSON.parse(localStorage.getItem('expense_installments') || '[]');
+        state.customTags = JSON.parse(localStorage.getItem('expense_tags') || '[]');
+      } catch(e) { console.error("Error loading local data", e); }
+    };
+
+    const saveLocalData = () => {
+      if(!useLocalStorage) return;
+      localStorage.setItem('expense_transactions', JSON.stringify(state.transactions));
+      localStorage.setItem('expense_installments', JSON.stringify(state.installments));
+      localStorage.setItem('expense_tags', JSON.stringify(state.customTags));
+    };
+
+    // --- Core Rendering Logic ---
+    function renderApp() {
+      const data = getDerivedData();
+      
+      // Hide all views
+      document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
+      document.getElementById(`view-${state.activeTab}`).classList.remove('hidden');
+
+      // Update Header input
+      const monthSelector = document.getElementById('month-selector');
+      monthSelector.value = state.currentMonthStr;
+      monthSelector.style.display = (state.activeTab === 'form') ? 'none' : 'block';
+
+      // Update Bottom Nav UI
+      document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.classList.remove('text-indigo-600');
+        btn.classList.add('text-gray-400');
+        btn.querySelector('span').classList.remove('font-bold');
+        btn.querySelector('.icon-container').classList.remove('scale-110');
+      });
+      document.getElementById('nav-form').className = `bg-indigo-600 text-white p-4 rounded-full shadow-lg transform transition-transform ${state.activeTab === 'form' ? 'scale-110 bg-indigo-700 shadow-indigo-200' : 'hover:scale-105 active:scale-95'}`;
+      
+      if (state.activeTab !== 'form') {
+        const activeBtn = document.getElementById(`nav-${state.activeTab}`);
+        if(activeBtn) {
+          activeBtn.classList.remove('text-gray-400');
+          activeBtn.classList.add('text-indigo-600');
+          activeBtn.querySelector('span').classList.add('font-bold');
+          activeBtn.querySelector('.icon-container').classList.add('scale-110');
+        }
+      }
+
+      // Render Active View
+      switch(state.activeTab) {
+        case 'dashboard': renderDashboard(data); break;
+        case 'calendar': renderCalendar(data); break;
+        case 'list': renderList(data); break;
+        case 'installments': renderInstallments(); break;
+        case 'form': renderForm(); break;
+      }
+
+      lucide.createIcons();
+    }
+
+    // --- View Renderers ---
+    function renderDashboard(data) {
+      const [year, month] = state.currentMonthStr.split('-');
+      let html = `
+        <div class="space-y-6 animate-fade-in">
+          <div class="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl p-6 text-white shadow-lg shadow-indigo-200">
+            <p class="text-indigo-100 text-sm mb-1">${year}年 ${month}月 結餘</p>
+            <h2 class="text-4xl font-bold mb-6 tracking-tight">${formatCurrency(data.balance)}</h2>
+            <div class="flex justify-between border-t border-indigo-400/30 pt-4">
+              <div>
+                <p class="text-indigo-100 text-xs flex items-center gap-1 mb-1"><i data-lucide="arrow-up-circle" class="w-3 h-3"></i> 總收入</p>
+                <p class="font-semibold text-lg">${formatCurrency(data.income)}</p>
+              </div>
+              <div class="text-right">
+                <p class="text-indigo-100 text-xs flex items-center gap-1 justify-end mb-1"><i data-lucide="arrow-down-circle" class="w-3 h-3"></i> 總支出</p>
+                <p class="font-semibold text-lg">${formatCurrency(data.expense)}</p>
+              </div>
+            </div>
+          </div>
+          ${renderPieChart(data.monthTx, data.expense)}
+        </div>
+      `;
+      document.getElementById('view-dashboard').innerHTML = html;
+    }
+
+    function renderPieChart(transactions, totalExpense) {
+      if (totalExpense === 0) {
+        return `
+          <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-100 text-center">
+            <h3 class="text-gray-600 font-bold mb-2 text-sm text-left">支出結構明細</h3>
+            <div class="w-32 h-32 mx-auto rounded-full border-8 border-gray-100 flex items-center justify-center my-4">
+              <p class="text-gray-400 text-xs">無支出紀錄</p>
+            </div>
+          </div>`;
+      }
+
+      const categories = {};
+      transactions.forEach(tx => {
+        if (tx.type === 'expense') categories[tx.category] = (categories[tx.category] || 0) + tx.amount;
+      });
+      
+      const expenseByCategory = Object.keys(categories)
+        .map(name => ({
+          name, amount: categories[name], percent: (categories[name] / totalExpense) * 100, color: CATEGORY_COLORS[name] || generateColorForString(name)
+        }))
+        .sort((a, b) => b.amount - a.amount);
+
+      const radius = 15.91549430918954;
+      let cumulativePercent = 0;
+      let svgContent = `<circle cx="21" cy="21" r="${radius}" fill="transparent" stroke="#f1f5f9" stroke-width="6" />`;
+      
+      expenseByCategory.forEach(cat => {
+        svgContent += `<circle cx="21" cy="21" r="${radius}" fill="transparent" stroke="${cat.color}" stroke-width="6" stroke-dasharray="${cat.percent} ${100 - cat.percent}" stroke-dashoffset="${100 - cumulativePercent}" class="transition-all duration-500 ease-out" />`;
+        cumulativePercent += cat.percent;
+      });
+
+      const displayCategories = state.pieChartExpanded ? expenseByCategory : expenseByCategory.slice(0, 4);
+      let listHtml = displayCategories.map(cat => `
+        <div class="flex items-center justify-between p-2 rounded-lg hover:bg-gray-50 transition-colors">
+          <div class="flex items-center gap-3">
+            <span class="w-3.5 h-3.5 rounded-full shadow-sm" style="background-color: ${cat.color}"></span>
+            <span class="text-gray-700 font-bold text-sm">${cat.name}</span>
+          </div>
+          <div class="flex items-center gap-4">
+            <span class="text-gray-800 font-bold tracking-tight">${formatCurrency(cat.amount)}</span>
+            <span class="text-gray-400 font-medium text-xs w-8 text-right bg-gray-100 rounded-md py-0.5">${Math.round(cat.percent)}%</span>
+          </div>
+        </div>
+      `).join('');
+
+      let btnHtml = '';
+      if (expenseByCategory.length > 4) {
+        btnHtml = `
+          <button onclick="window.togglePieChart()" class="w-full mt-2 pt-3 border-t border-dashed border-gray-200 text-indigo-500 font-bold text-sm flex items-center justify-center gap-1 hover:text-indigo-600 transition-colors">
+            ${state.pieChartExpanded ? `收起明細清單 <i data-lucide="chevron-up" class="w-4 h-4"></i>` : `查看其餘 ${expenseByCategory.length - 4} 項類別明細 <i data-lucide="chevron-down" class="w-4 h-4"></i>`}
+          </button>
+        `;
+      }
+
+      return `
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <h3 class="text-gray-800 font-bold mb-6 text-base">本月支出明細排行</h3>
+          <div class="flex justify-center mb-8">
+            <div class="relative w-40 h-40">
+              <svg viewBox="0 0 42 42" class="w-full h-full transform -rotate-90 drop-shadow-sm">${svgContent}</svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span class="text-xs font-medium text-gray-500 mb-0.5">總支出</span>
+                <span class="text-sm font-bold text-gray-800">$${totalExpense > 9999 ? (totalExpense/1000).toFixed(1)+'k' : totalExpense}</span>
+              </div>
+            </div>
+          </div>
+          <div class="space-y-3">${listHtml}${btnHtml}</div>
+        </div>
+      `;
+    }
+
+    function renderCalendar(data) {
+      const [year, month] = state.currentMonthStr.split('-');
+      const y = parseInt(year); const m = parseInt(month) - 1;
+      const firstDay = new Date(y, m, 1).getDay();
+      const totalDays = new Date(y, m + 1, 0).getDate();
+      
+      let gridHtml = '';
+      for(let i=0; i<firstDay; i++) { gridHtml += `<div class="h-16 rounded-xl bg-gray-50/50"></div>`; }
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      
+      for(let i=1; i<=totalDays; i++) {
+        const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(i).padStart(2,'0')}`;
+        const dayTxs = data.allEffective.filter(t => t.date === dateStr);
+        let inc = 0, exp = 0;
+        dayTxs.forEach(t => { if(t.type === 'income') inc += t.amount; else exp += t.amount; });
+        
+        const isSelected = dateStr === state.calendarSelectedDate;
+        const isToday = dateStr === todayStr;
+        
+        let amountHtml = `<div class="mt-auto flex flex-col items-center w-full">`;
+        if (inc > 0) amountHtml += `<span class="text-[9px] font-bold text-green-500 leading-none mb-0.5">+${inc > 9999 ? '9k+' : inc}</span>`;
+        if (exp > 0) amountHtml += `<span class="text-[9px] font-bold text-red-500 leading-none">-${exp > 9999 ? '9k+' : exp}</span>`;
+        amountHtml += `</div>`;
+
+        gridHtml += `
+          <button onclick="window.setCalendarDate('${dateStr}')" class="h-16 rounded-xl flex flex-col items-center pt-1 pb-1 px-0.5 relative transition-all ${isSelected ? 'bg-indigo-50 border-2 border-indigo-500 shadow-sm' : 'bg-white border-2 border-transparent hover:bg-gray-50'}">
+            <span class="text-sm font-bold ${isToday ? 'bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center' : 'text-gray-700'}">${i}</span>
+            ${amountHtml}
+          </button>
+        `;
+      }
+
+      const selectedTxs = data.allEffective.filter(t => t.date === state.calendarSelectedDate);
+      let listHtml = '';
+      if(selectedTxs.length === 0) {
+        listHtml = `<div class="bg-white rounded-2xl border border-gray-100 border-dashed p-8 text-center text-gray-400"><p class="text-sm">這一天沒有任何收支紀錄</p></div>`;
+      } else {
+        listHtml = `<div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">` + 
+          selectedTxs.map((tx, idx) => generateTxHTML(tx, idx === selectedTxs.length - 1)).join('') + `</div>`;
+      }
+
+      const html = `
+        <div class="space-y-6 animate-fade-in pb-4">
+          <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+            <div class="grid grid-cols-7 gap-1 text-center mb-2">
+              ${['日', '一', '二', '三', '四', '五', '六'].map(d => `<div class="text-xs font-bold text-gray-400 py-1">${d}</div>`).join('')}
+            </div>
+            <div class="grid grid-cols-7 gap-1 gap-y-2">${gridHtml}</div>
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-gray-600 mb-3 px-1 flex items-center gap-2">
+              <i data-lucide="calendar" class="w-4 h-4"></i> ${state.calendarSelectedDate.replace(/-/g, '/')} 明細
+            </h3>
+            ${listHtml}
+          </div>
+        </div>
+      `;
+      document.getElementById('view-calendar').innerHTML = html;
+    }
+
+    function renderList(data) {
+      if (data.monthTx.length === 0) {
+        document.getElementById('view-list').innerHTML = `
+          <div class="flex flex-col items-center justify-center py-24 text-gray-400 animate-fade-in">
+            <i data-lucide="list" class="w-16 h-16 mb-4 opacity-20 text-indigo-300"></i>
+            <p class="font-medium text-gray-500">這個月還沒有任何紀錄喔！</p>
+            <p class="text-xs mt-2">點擊下方「+」按鈕開始記帳</p>
+          </div>`;
+        return;
+      }
+
+      const grouped = {};
+      data.monthTx.forEach(tx => {
+        if(!grouped[tx.date]) grouped[tx.date] = [];
+        grouped[tx.date].push(tx);
+      });
+      const sortedDates = Object.keys(grouped).sort((a,b) => new Date(b) - new Date(a));
+
+      let html = `<div class="space-y-6 animate-fade-in pb-4">`;
+      sortedDates.forEach(date => {
+        const dailyTotal = grouped[date].reduce((sum, tx) => tx.type==='income' ? sum+tx.amount : sum-tx.amount, 0);
+        html += `
+          <div>
+            <div class="flex justify-between items-end mb-2 px-1">
+              <h3 class="text-sm font-bold text-gray-600 bg-gray-200/50 px-3 py-1 rounded-full inline-block">${date.replace(/-/g, '/')}</h3>
+              <span class="text-xs font-bold ${dailyTotal>0?'text-green-600':dailyTotal<0?'text-gray-500':'text-gray-400'}">單日 ${dailyTotal>0?'+':''}${formatCurrency(dailyTotal)}</span>
+            </div>
+            <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              ${grouped[date].map((tx, idx) => generateTxHTML(tx, idx === grouped[date].length - 1)).join('')}
+            </div>
+          </div>
+        `;
+      });
+      html += `</div>`;
+      document.getElementById('view-list').innerHTML = html;
+    }
+
+    function generateTxHTML(tx, isLast) {
+      const color = tx.isInstallmentPayment ? '#a855f7' : tx.type === 'income' ? '#22c55e' : (CATEGORY_COLORS[tx.category] || generateColorForString(tx.category));
+      const icon = tx.isInstallmentPayment ? 'credit-card' : tx.type === 'income' ? 'arrow-up-circle' : 'tag';
+      
+      return `
+        <div onclick="window.handleEditTx('${tx.id}', ${tx.isInstallmentPayment})" class="p-4 flex items-center justify-between cursor-pointer hover:bg-indigo-50 transition-colors ${!isLast ? 'border-b border-gray-50' : ''}">
+          <div class="flex items-center gap-3">
+            <div class="flex-shrink-0">
+              <div class="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shadow-sm" style="background-color: ${color}">
+                <i data-lucide="${icon}" class="w-[18px] h-[18px]"></i>
+              </div>
+            </div>
+            <div class="flex flex-col">
+              <p class="font-bold text-gray-800 text-sm leading-tight flex items-center gap-1">${tx.title}</p>
+              <div class="flex items-center gap-1 mt-1">
+                <span class="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-md">${tx.category}</span>
+                ${tx.isInstallmentPayment ? `<span class="text-[10px] text-purple-500 font-medium">自動分攤</span>` : ''}
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="font-bold tracking-tight ${tx.type === 'income' ? 'text-green-600' : 'text-gray-800'}">
+              ${tx.type === 'income' ? '+' : '-'}${formatCurrency(tx.amount)}
+            </span>
+            <div class="flex items-center">
+              ${!tx.isInstallmentPayment 
+                ? `<button onclick="event.stopPropagation(); window.handleDeleteTx('${tx.id}')" class="text-gray-300 hover:text-red-500 transition-colors p-1.5 ml-1 bg-white rounded-full shadow-sm border border-gray-100"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>`
+                : `<div class="p-1.5 ml-1 text-purple-300"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></div>`
+              }
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderInstallments() {
+      if (state.installments.length === 0) {
+        document.getElementById('view-installments').innerHTML = `
+          <div class="flex flex-col items-center justify-center py-24 text-gray-400 animate-fade-in">
+            <i data-lucide="credit-card" class="w-16 h-16 mb-4 opacity-20 text-purple-300"></i>
+            <p class="font-medium text-gray-500">目前沒有進行中的分期付款。</p>
+            <p class="text-xs mt-2 text-center px-6">在新增頁面選擇「信用卡分期」，系統會自動為您計算每個月的應繳金額。</p>
+          </div>`;
+        return;
+      }
+
+      let html = `
+        <div class="space-y-4 animate-fade-in pb-4">
+          <div class="flex items-center gap-2 mb-4">
+            <h2 class="text-gray-800 font-bold text-lg">進行中分期專案</h2>
+            <span class="bg-purple-100 text-purple-700 text-xs font-bold px-2 py-0.5 rounded-full">共 ${state.installments.length} 筆</span>
+          </div>
+      `;
+
+      state.installments.forEach(inst => {
+        const payments = generateInstallmentPayments(inst);
+        let paidCount = 0; let paidAmount = 0;
+        payments.forEach((p, idx) => {
+          if (p.monthStr <= state.currentMonthStr) { paidCount = idx + 1; paidAmount += p.amount; }
+        });
+        if (state.currentMonthStr < payments[0].monthStr) { paidCount = 0; paidAmount = 0; }
+        if (state.currentMonthStr > payments[payments.length - 1].monthStr) { paidCount = inst.months; paidAmount = inst.totalAmount; }
+
+        const remainingAmount = inst.totalAmount - paidAmount;
+        const isFinished = paidCount >= inst.months;
+        const progressPercentage = (paidCount / inst.months) * 100;
+
+        html += `
+          <div onclick="window.handleEditInst('${inst.id}')" class="bg-white rounded-2xl shadow-sm border p-5 relative overflow-hidden transition-all cursor-pointer hover:shadow-md ${isFinished ? 'border-green-200 bg-green-50/30' : 'border-purple-100 hover:border-purple-300'}">
+            <div class="flex justify-between items-start mb-3">
+              <div class="flex-1">
+                <h3 class="font-bold text-gray-800 text-lg leading-tight flex items-center gap-2">${inst.title} <i data-lucide="pencil" class="w-3.5 h-3.5 text-gray-300"></i></h3>
+                <div class="text-xs font-medium text-gray-500 mt-2 flex flex-wrap items-center gap-2">
+                  <span class="inline-block px-2 py-0.5 bg-gray-100 text-gray-600 rounded-md">${inst.category}</span>
+                  <span>總額 ${formatCurrency(inst.totalAmount)}</span>
+                  ${(!isFinished && remainingAmount > 0) ? `<span class="text-red-500 font-bold ml-auto bg-red-50 px-2 py-0.5 rounded-md">待繳 ${formatCurrency(remainingAmount)}</span>` : ''}
+                </div>
+              </div>
+              <button onclick="event.stopPropagation(); window.handleDeleteInst('${inst.id}')" class="text-gray-300 hover:text-red-500 bg-gray-50 p-2 rounded-full transition-colors ml-3 border border-gray-100"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+            </div>
+            <div class="mt-5">
+              <div class="flex justify-between text-xs font-bold mb-2">
+                <span class="${isFinished ? 'text-green-600' : 'text-purple-600'}">${isFinished ? '🎉 恭喜！已全數結清' : `繳款進度：${paidCount} / ${inst.months} 期`}</span>
+                <span class="text-gray-600">每期 ${formatCurrency(Math.round(inst.totalAmount / inst.months))}</span>
+              </div>
+              <div class="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                <div class="h-full transition-all duration-1000 ease-out relative ${isFinished ? 'bg-green-500' : 'bg-gradient-to-r from-purple-400 to-indigo-500'}" style="width: ${progressPercentage}%">
+                  <div class="absolute top-0 right-0 bottom-0 left-0 bg-white opacity-20" style="background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent); transform: translateX(-100%); animation: shimmer 2s infinite;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+      html += `</div>`;
+      document.getElementById('view-installments').innerHTML = html;
+    }
+
+    function renderForm() {
+      const isEdit = state.editingItem !== null;
+      const type = isEdit ? (state.editingItem.type === 'installment' ? 'installment' : state.editingItem.data.type) : state.formType;
+      
+      let amount = '', title = '', category = state.formCategory, date = new Date().toISOString().split('T')[0], months = 3;
+
+      if (isEdit) {
+        const d = state.editingItem.data;
+        if(state.editingItem.type === 'installment') {
+          amount = d.totalAmount; months = d.months; title = d.title; category = d.category; date = d.startDate;
+        } else {
+          amount = d.amount; title = d.title; category = d.category; date = d.date;
+        }
+      }
+
+      const currentCustomTags = state.customTags.filter(t => t.type === type);
+
+      let tagsHtml = DEFAULT_CATEGORIES[type].map(c => `
+        <button type="button" onclick="window.setFormCategory('${c}')" class="px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${category === c ? 'bg-gray-800 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}">${c}</button>
+      `).join('');
+
+      tagsHtml += currentCustomTags.map(tag => `
+        <div class="flex items-center border rounded-full overflow-hidden transition-colors ${category === tag.text ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-indigo-50 border-indigo-100 text-indigo-700'}">
+          <button type="button" onclick="window.setFormCategory('${tag.text}')" class="px-3 py-1.5 text-xs font-bold hover:bg-black/5 transition-colors">${tag.text}</button>
+          <button type="button" onclick="event.stopPropagation(); window.deleteCustomTag('${tag.id}')" class="px-1.5 py-1.5 transition-colors ${category === tag.text ? 'hover:bg-indigo-700 text-indigo-200 hover:text-white' : 'hover:bg-indigo-200 text-indigo-400 hover:text-indigo-800'}"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+        </div>
+      `).join('');
+
+      const html = `
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 animate-fade-in relative">
+          <div class="flex justify-between items-center mb-6">
+            <h2 class="text-xl font-bold text-gray-800 w-full text-center">
+              ${isEdit ? (type === 'installment' ? '編輯分期專案' : '編輯紀錄') : '新增紀錄'}
+            </h2>
+          </div>
+          
+          ${!isEdit ? `
+          <div class="flex bg-gray-100 rounded-xl p-1 mb-6">
+            <button onclick="window.setFormType('expense')" type="button" class="flex-1 py-2 text-sm font-bold rounded-lg transition-all ${type === 'expense' ? 'bg-white text-red-500 shadow-sm' : 'text-gray-500 hover:text-gray-700'}">一般支出</button>
+            <button onclick="window.setFormType('income')" type="button" class="flex-1 py-2 text-sm font-bold rounded-lg transition-all ${type === 'income' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}">收入</button>
+            <button onclick="window.setFormType('installment')" type="button" class="flex-1 py-2 text-sm font-bold rounded-lg transition-all ${type === 'installment' ? 'bg-white text-purple-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}">信用卡分期</button>
+          </div>
+          ` : ''}
+
+          ${isEdit && type === 'installment' ? `<div class="bg-purple-50 text-purple-700 text-xs font-bold px-3 py-2 rounded-lg mb-6 text-center">💡 修改母專案將自動重新計算所有月份的分攤金額</div>` : ''}
+
+          <form id="entry-form" onsubmit="window.handleFormSubmit(event)" class="space-y-4">
+            <div>
+              <label class="block text-xs font-semibold text-gray-600 mb-1">${type === 'installment' ? '總金額 (將自動平均分攤)' : '金額'}</label>
+              <div class="relative">
+                <span class="absolute left-4 top-3.5 text-gray-400 font-bold">$</span>
+                <input type="number" id="f-amount" value="${amount}" class="w-full pl-8 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-semibold text-gray-800 text-lg outline-none" placeholder="0" required min="1" />
+              </div>
+            </div>
+
+            ${type === 'installment' ? `
+            <div>
+              <label class="block text-xs font-semibold text-gray-600 mb-1">分期期數 (月)</label>
+              <select id="f-months" class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-medium text-gray-700 outline-none">
+                ${[3,6,12,18,24,30].map(m => `<option value="${m}" ${m==months?'selected':''}>${m} 期</option>`).join('')}
+              </select>
+            </div>
+            ` : ''}
+
+            <div>
+              <label class="block text-xs font-semibold text-gray-600 mb-1">項目名稱</label>
+              <div class="relative">
+                <i data-lucide="file-text" class="absolute left-3 top-3.5 text-gray-400 w-5 h-5"></i>
+                <input type="text" id="f-title" value="${title}" class="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-medium text-gray-800 outline-none" placeholder="${type === 'installment' ? '例如：iPhone 15' : '例如：午餐便當'}" required />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-gray-600 mb-1">分類標籤 (可點選或自訂輸入)</label>
+              <div class="relative">
+                <i data-lucide="tag" class="absolute left-3 top-3.5 text-gray-400 w-5 h-5"></i>
+                <input type="text" id="f-category" value="${category}" oninput="window.updateFormCategoryState(this.value)" class="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-medium text-gray-800 outline-none" placeholder="點選下方標籤或自行輸入新標籤" required />
+              </div>
+              <div class="flex flex-wrap gap-2 mt-3">${tagsHtml}</div>
+            </div>
+
+            <div>
+               <label class="block text-xs font-semibold text-gray-600 mb-1 mt-4">${type === 'installment' ? '首期日期' : '日期'}</label>
+               <div class="relative">
+                 <i data-lucide="calendar" class="absolute left-3 top-3.5 text-gray-400 w-5 h-5"></i>
+                 <input type="date" id="f-date" value="${date}" class="w-full pl-10 pr-3 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all text-sm font-medium text-gray-700 outline-none" required />
+               </div>
+            </div>
+
+            <div class="flex gap-3 mt-8 pt-4 border-t border-gray-100">
+              ${isEdit ? `<button type="button" onclick="window.cancelEdit()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl transition-colors">取消</button>` : ''}
+              <button type="submit" class="flex-[2] text-white font-bold py-4 rounded-xl shadow-md transition-colors flex justify-center items-center gap-2 ${isEdit ? 'bg-green-600 hover:bg-green-700' : 'bg-indigo-600 hover:bg-indigo-700'}">
+                <i data-lucide="${isEdit ? 'pencil' : 'plus-circle'}" class="w-5 h-5"></i>
+                ${isEdit ? '更新紀錄' : '儲存紀錄至雲端'}
+              </button>
+            </div>
+          </form>
+        </div>
+      `;
+      document.getElementById('view-form').innerHTML = html;
+    }
+
+
+    // --- Global Actions & Event Handlers ---
+    window.switchTab = (tab) => {
+      state.editingItem = null;
+      state.activeTab = tab;
+      renderApp();
+    };
+
+    window.togglePieChart = () => {
+      state.pieChartExpanded = !state.pieChartExpanded;
+      renderApp();
+    };
+
+    window.setCalendarDate = (date) => {
+      state.calendarSelectedDate = date;
+      renderApp();
+    };
+
+    window.setFormType = (type) => {
+      state.formType = type;
+      state.formCategory = DEFAULT_CATEGORIES[type][0];
+      renderApp();
+    };
+
+    window.setFormCategory = (category) => {
+      state.formCategory = category;
+      const catInput = document.getElementById('f-category');
+      if(catInput) catInput.value = category;
+      renderApp(); // Re-render to highlight active tag
+    };
+
+    window.updateFormCategoryState = (val) => {
+      state.formCategory = val; // Keep state in sync without full re-render
+    }
+
+    window.handleEditTx = (id, isInst) => {
+      if (isInst) {
+        const tx = state.transactions.find(t => t.id === id) || getDerivedData().allEffective.find(t=>t.id===id);
+        if(tx && tx.installmentId) window.handleEditInst(tx.installmentId);
+        return;
+      }
+      const tx = state.transactions.find(t => t.id === id);
+      if (tx) {
+        state.editingItem = { type: 'transaction', data: tx };
+        state.activeTab = 'form';
+        renderApp();
+      }
+    };
+
+    window.handleEditInst = (id) => {
+      const inst = state.installments.find(i => i.id === id);
+      if (inst) {
+        state.editingItem = { type: 'installment', data: inst };
+        state.activeTab = 'form';
+        renderApp();
+      }
+    };
+
+    window.cancelEdit = () => {
+      const targetTab = state.editingItem.type === 'installment' ? 'installments' : 'list';
+      state.editingItem = null;
+      state.activeTab = targetTab;
+      renderApp();
+    };
+
+    window.handleDeleteTx = async (id) => {
+      if (useLocalStorage) {
+        state.transactions = state.transactions.filter(t => t.id !== id);
+        saveLocalData();
+        renderApp();
+        return;
+      }
+      if (!db || !state.user) return;
+      try { await deleteDoc(doc(db, 'artifacts', appId, 'users', state.user.uid, 'transactions', id)); } 
+      catch (error) { console.error(error); }
+    };
+
+    window.handleDeleteInst = async (id) => {
+      if (useLocalStorage) {
+        state.installments = state.installments.filter(t => t.id !== id);
+        saveLocalData();
+        renderApp();
+        return;
+      }
+      if (!db || !state.user) return;
+      try { await deleteDoc(doc(db, 'artifacts', appId, 'users', state.user.uid, 'installments', id)); } 
+      catch (error) { console.error(error); }
+    };
+
+    window.deleteCustomTag = async (id) => {
+      if (useLocalStorage) {
+        state.customTags = state.customTags.filter(t => t.id !== id);
+        saveLocalData();
+        renderApp();
+        return;
+      }
+      if (!db || !state.user) return;
+      try { await deleteDoc(doc(db, 'artifacts', appId, 'users', state.user.uid, 'custom_tags', id)); } 
+      catch (error) { console.error(error); }
+    };
+
+    const saveTagIfNew = async (tagText, tagType) => {
+      if (!tagText.trim() || DEFAULT_CATEGORIES[tagType].includes(tagText)) return;
+      if (state.customTags.some(t => t.text === tagText && t.type === tagType)) return;
+      
+      const id = Date.now().toString();
+      const newTag = { id, text: tagText, type: tagType };
+
+      if (useLocalStorage) {
+        state.customTags.push(newTag);
+        saveLocalData();
+        return;
+      }
+
+      if (!db || !state.user) return;
+      try { await setDoc(doc(db, 'artifacts', appId, 'users', state.user.uid, 'custom_tags', id), newTag); } 
+      catch (e) {}
+    };
+
+    window.handleFormSubmit = async (e) => {
+      e.preventDefault();
+      if(!state.user) return;
+
+      const isEdit = state.editingItem !== null;
+      const type = isEdit ? (state.editingItem.type === 'installment' ? 'installment' : state.editingItem.data.type) : state.formType;
+      
+      const amount = Number(document.getElementById('f-amount').value);
+      const title = document.getElementById('f-title').value;
+      const category = document.getElementById('f-category').value.trim();
+      const date = document.getElementById('f-date').value;
+      let months = 3;
+      if (type === 'installment') months = Number(document.getElementById('f-months').value);
+
+      const payload = { title, category };
+      if (type === 'installment') {
+        Object.assign(payload, { totalAmount: amount, months, startDate: date });
+      } else {
+        Object.assign(payload, { type, amount, date });
+      }
+
+      if (useLocalStorage) {
+        if (isEdit) {
+          const id = state.editingItem.data.id;
+          payload.id = id;
+          if (type === 'installment') {
+            const idx = state.installments.findIndex(i => i.id === id);
+            if (idx > -1) state.installments[idx] = payload;
+          } else {
+            const idx = state.transactions.findIndex(t => t.id === id);
+            if (idx > -1) state.transactions[idx] = payload;
+          }
+        } else {
+          payload.id = Date.now().toString();
+          if (type === 'installment') state.installments.push(payload);
+          else state.transactions.push(payload);
+        }
+        await saveTagIfNew(category, type);
+        saveLocalData();
+        
+        state.editingItem = null;
+        state.activeTab = (type === 'installment') ? 'installments' : 'list';
+        renderApp();
+        return;
+      }
+
+      // Firebase saving logic
+      if(!db) return;
+      try {
+        if (isEdit) {
+          const id = state.editingItem.data.id;
+          const colName = state.editingItem.type === 'installment' ? 'installments' : 'transactions';
+          await updateDoc(doc(db, 'artifacts', appId, 'users', state.user.uid, colName, id), payload);
+        } else {
+          const id = Date.now().toString();
+          payload.id = id;
+          const colName = type === 'installment' ? 'installments' : 'transactions';
+          await setDoc(doc(db, 'artifacts', appId, 'users', state.user.uid, colName, id), payload);
+        }
+        await saveTagIfNew(category, type);
+        
+        state.editingItem = null;
+        state.activeTab = (type === 'installment') ? 'installments' : 'list';
+        renderApp();
+      } catch (error) {
+        console.error("Error saving doc:", error);
+      }
+    };
+
+    // Global Listeners
+    document.getElementById('month-selector').addEventListener('change', (e) => {
+      state.currentMonthStr = e.target.value;
+      renderApp();
+    });
+
+    // --- Init ---
+    if (auth) {
+      const initAuth = async () => {
+        try {
+          if (initToken) await signInWithCustomToken(auth, initToken);
+          else await signInAnonymously(auth);
+        } catch (error) { console.error("Auth failed:", error); }
+      };
+      initAuth();
+
+      onAuthStateChanged(auth, (user) => {
+        state.user = user;
+        document.getElementById('loading-screen').style.display = 'none';
+        document.getElementById('app-container').style.display = 'flex';
+        
+        if (user) {
+          document.getElementById('auth-status').classList.replace('text-gray-400', 'text-green-500');
+          document.getElementById('auth-status').classList.replace('bg-gray-100', 'bg-green-50');
+          document.getElementById('auth-status').innerHTML = '<i data-lucide="cloud" class="w-4 h-4"></i>';
+
+          // Snapshots
+          onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), (snap) => {
+            state.transactions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            renderApp();
+          });
+          onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'installments'), (snap) => {
+            state.installments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            renderApp();
+          });
+          onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'custom_tags'), (snap) => {
+            state.customTags = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            renderApp();
+          });
+        }
+      });
+    } else {
+      // Offline fallback
+      document.getElementById('loading-screen').style.display = 'none';
+      document.getElementById('app-container').style.display = 'flex';
+      if (useLocalStorage) {
+        loadLocalData();
+      }
+      renderApp();
+    }
+
+  </script>
+</body>
+</html>
